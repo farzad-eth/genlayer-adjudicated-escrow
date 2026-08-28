@@ -1,65 +1,44 @@
 # AdjudicatedEscrow — Contract-Acquired Evidence Escrow
 
-AdjudicatedEscrow is a GenLayer bonded escrow primitive for obligations that require substantive judgment. A depositor posts payment plus fee, and a contractor posts a 25% forfeitable bond plus fee. Settlement is decided by GenLayer validators, but the facts that determine settlement are acquired by the contract itself—not supplied as arbitrary text by a permissionless resolver.
+AdjudicatedEscrow is a GenLayer bonded escrow primitive for obligations requiring substantive judgment. The depositor posts payment plus fee; the contractor posts a 25% forfeitable bond plus fee. Settlement is decided by validators, while settlement facts are acquired by the contract itself rather than supplied as arbitrary resolver text.
 
-> **Corrective guarantee:** `resolve(agreement_id)` has no evidence parameter. It resolves only from the HTTPS evidence manifest committed during `open_agreement` and accepted by the contractor when bonding the agreement.
+> **Lint-clean correction:** `resolve(agreement_id)` has no evidence parameter. It resolves only from the immutable HTTPS manifest committed at `open_agreement` and accepted when the contractor bonds.
 
-## Verified Live Deployment
+## Verified deployment
 
 | Item | Evidence |
 | --- | --- |
-| Contract | [`0x0A8E5B4fa9c29546AC719ca5A0e9D1a4fB02Bd07`](https://explorer-studio.genlayer.com/address/0x0A8E5B4fa9c29546AC719ca5A0e9D1a4fB02Bd07) |
-| Deployment transaction | [`0x3ba3269e32a247d4e9ef9cb553cde4053cc1e5a574579061c0974effad71f12a`](https://explorer-studio.genlayer.com/tx/0x3ba3269e32a247d4e9ef9cb553cde4053cc1e5a574579061c0974effad71f12a) |
+| Contract | [`0x467f95a5F4E284C89bd892B3538987C9182020a4`](https://explorer-studio.genlayer.com/address/0x467f95a5F4E284C89bd892B3538987C9182020a4) |
+| Deployment transaction | [`0x62d5544331a049e4ebd2703a33d57dea6452eea2d3f628ce782c97801e73dfc8`](https://explorer-studio.genlayer.com/tx/0x62d5544331a049e4ebd2703a33d57dea6452eea2d3f628ce782c97801e73dfc8) |
 | Explorer result | **FINALIZED**; constructor **SUCCESS**; consensus **Accepted** |
+| Source commit | [`d9d1d66`](https://github.com/farzad-eth/genlayer-adjudicated-escrow/commit/d9d1d66) |
 | Direct Mode tests | **36 passed** |
 
-## Corrected Evidence Model
+## Evidence and consensus model
 
-At agreement creation, the depositor commits a bounded, canonical newline-delimited manifest of one to three unique HTTPS URLs. The contractor’s acceptance binds them to that exact source set. During `resolve`, the leader and every validator independently call `gl.nondet.web.render(url, mode="text")` for every committed URL. Retrieved material is bounded and explicitly framed as untrusted data before adjudication.
+At agreement creation, the depositor commits a bounded canonical newline-delimited manifest containing 1–3 unique HTTPS URLs. The contractor accepts that exact manifest when bonding. During resolution, the callback passed directly to `run_nondet_unsafe` independently calls `gl.nondet.web.render(url, mode="text")` for each committed source. Retrieved content is size-capped and framed as untrusted data before adjudication. Validators independently repeat retrieval and adjudication; only the outcome enum is compared, while reasoning is audit-only. Retrieval faults rotate the leader rather than becoming a settlement outcome.
 
-| Risk | Contract control |
+| Risk | Control |
 | --- | --- |
-| Resolver injects self-serving text | `resolve(id)` accepts no evidence argument. |
-| A party changes the source set after acceptance | The manifest is stored before bonding and is never mutable. |
-| Validators accept a leader’s claimed facts | Each validator independently retrieves the committed URLs and reruns adjudication. |
-| Free-form model text prevents consensus | Only the `outcome` enum is compared; `reason` is audit-only. |
-| A transient source outage settles an escrow | Retrieval faults are transient and reject the leader rather than become a settlement outcome. |
-| Prompt injection from a deliverable page | Retrieved content is size-capped and treated as untrusted data. |
-
-## Lifecycle
-
-```text
-open_agreement(spec, deadline, evidence_manifest)
-  -> depositor locks payment plus fee; manifest becomes immutable
-accept_agreement(id)
-  -> contractor locks 25% bond plus fee and accepts that manifest
-deliver(id) or deadline passes
-resolve(id) by anyone
-  -> validators independently fetch the manifest URLs and compare only outcome
-  -> fulfilled: contractor receives principal pot minus fees
-  -> failed: depositor receives principal pot minus fees
-  -> refunded: contract applies the refund rule
-```
+| Resolver injects evidence | `resolve(id)` has no evidence argument. |
+| Source set changes after acceptance | The manifest is immutable after bonding. |
+| Leader output is trusted | Validators independently retrieve sources and rerun the callback. |
+| Free-form text breaks consensus | Only outcome `1`, `2`, or `3` is compared. |
+| Prompt injection | Agreement and retrieved pages are explicitly untrusted data. |
 
 ## Interface
 
-| Method | Type | Description |
-| --- | --- | --- |
-| `open_agreement(contractor_hint, spec, deadline, evidence_manifest)` | Payable write | Commits 1–3 HTTPS evidence sources before acceptance. |
-| `accept_agreement(id)` | Payable write | Locks the required contractor bond. |
-| `deliver(id)` | Write | Records contractor delivery notice. |
-| `resolve(id)` | Permissionless write | Retrieves committed sources and settles only after validator agreement. |
-| `approve_cancellation(id)` | Write | Mutual cancellation path. |
-| `get_agreement(id)` | View | Returns agreement state, committed manifest, and ruling. |
+| Method | Description |
+| --- | --- |
+| `open_agreement(contractor_hint, spec, deadline, evidence_manifest)` | Commits the HTTPS evidence manifest and locks the depositor payment. |
+| `accept_agreement(id)` | Locks the contractor bond and binds the manifest. |
+| `deliver(id)` | Records delivery notice. |
+| `resolve(id)` | Permissionlessly retrieves committed sources and settles after validator agreement. |
+| `approve_cancellation(id)` | Mutual cancellation path. |
+| `get_agreement(id)` | Returns auditable agreement state and ruling. |
 
-## Test Coverage
+The Direct Mode suite covers lifecycle invariants, manifest validation, contract-side retrieval, validator replay, divergent outcomes, malformed model output, error classification, prompt-injection framing, and escrow accounting. The final lint-refactored source completed with **36 passed**.
 
-The Direct Mode suite covers lifecycle invariants, manifest validation, contract-side source retrieval, empty-source failure, prompt-injection framing, validator replay, divergent outcomes, malformed LLM results, error classification, and escrow accounting. The verified final run completed with **36 passed**.
+See the [contract source](contracts/AdjudicatedEscrow.py), [tests](tests/test_adjudicated_escrow.py), and [deployment Explorer page](https://explorer-studio.genlayer.com/address/0x467f95a5F4E284C89bd892B3538987C9182020a4).
 
-## References
-
-[GenLayer web content retrieval](https://docs.genlayer.com/developers/intelligent-contracts/examples/fetch-web-content) · [GenLayer testing guidance](https://docs.genlayer.com/developers/intelligent-contracts/testing) · [GenLayer networks](https://docs.genlayer.com/developers/networks)
-
-## License
-
-MIT — see [LICENSE](LICENSE).
+MIT License; see [LICENSE](LICENSE).
