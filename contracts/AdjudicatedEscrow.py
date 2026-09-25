@@ -30,6 +30,16 @@ from genlayer import *
 # ---------------------------------------------------------------------------
 
 BOND_BPS: u256 = u256(2500)  # contractor bond = 25.00% of deposit
+MIN_DEPOSIT: u256 = u256(4)  # guarantees a non-zero bond after integer flooring
+# Explicit u256 bounds make the bond multiplication and aggregate-liability
+# counter safe even when this reusable primitive receives adversarial inputs.
+MAX_U256: u256 = u256(
+    115792089237316195423570985008687907853269984665640564039457584007913129639935
+)
+# The largest accepted agreement can contain a deposit + 25% bond + two fees:
+# 1/4 + 1/16 + 2*(1/4) = 13/16 of u256, leaving safety headroom.
+MAX_BASE_FEE: u256 = MAX_U256 // u256(4)
+MAX_DEPOSIT: u256 = MAX_U256 // u256(4)
 MIN_SPEC_CHARS = 32
 MAX_SPEC_CHARS = 8000
 MIN_WINDOW_SECS = 3600
@@ -115,9 +125,12 @@ class AdjudicatedEscrow(gl.Contract):
     base_fee: u256
     escrows: TreeMap[u256, Agreement]
     next_id: u256
+    # Complete outstanding liability: participant stake *and* attached fees.
     total_escrowed: u256
 
     def __init__(self, arbiter_hint: Address, fee_recipient: Address, base_fee: u256):
+        if base_fee == u256(0) or base_fee > MAX_BASE_FEE:
+            raise gl.vm.UserError("base fee must be within the safe non-zero range")
         self.arbiter_hint = arbiter_hint
         self.fee_recipient = fee_recipient
         self.base_fee = base_fee
@@ -202,6 +215,10 @@ class AdjudicatedEscrow(gl.Contract):
                 f"value must exceed the adjudication fee ({self.base_fee} wei); got {value}"
             )
         deposit = value - self.base_fee
+        if deposit < MIN_DEPOSIT or deposit > MAX_DEPOSIT:
+            raise gl.vm.UserError(
+                f"deposit must be {MIN_DEPOSIT}..{MAX_DEPOSIT} wei for safe bonding"
+            )
         now = self._now()
         if deadline < now + u256(MIN_WINDOW_SECS):
             raise gl.vm.UserError(
@@ -231,7 +248,7 @@ class AdjudicatedEscrow(gl.Contract):
             cancel_yes_contractor=False,
             ruling=Ruling(outcome=u8(0), reason="", decided_at=u256(0)),
         )
-        self.total_escrowed = self.total_escrowed + deposit
+        self._increase_total_escrowed(value)
         return agreement_id
 
     @gl.public.write.payable
@@ -250,17 +267,21 @@ class AdjudicatedEscrow(gl.Contract):
             raise gl.vm.UserError("acceptance window closed (deadline too close)")
 
         required_bond = self._required_bond(e.deposit)
+        if required_bond > MAX_U256 - self.base_fee:
+            raise gl.vm.UserError("bond plus fee exceeds the safe amount range")
         needed = required_bond + self.base_fee
         if gl.message.value != needed:
             raise gl.vm.UserError(
                 f"attach exactly {needed} wei ({required_bond} bond + {self.base_fee} fee)"
             )
+        if e.fee > MAX_U256 - self.base_fee:
+            raise gl.vm.UserError("aggregate agreement fee exceeds the safe amount range")
 
         e.contractor = gl.message.sender_address
         e.bond = required_bond
         e.fee = e.fee + self.base_fee
         e.accepted = True
-        self.total_escrowed = self.total_escrowed + required_bond
+        self._increase_total_escrowed(needed)
 
     @gl.public.write
     def deliver(self, agreement_id: u256) -> None:
@@ -282,6 +303,8 @@ class AdjudicatedEscrow(gl.Contract):
         e = self._agreement_or_revert(agreement_id)
         if e.state != STATE_OPEN:
             raise gl.vm.UserError("agreement is not open")
+        if not e.accepted:
+            raise gl.vm.UserError("cancellation requires a bonded contractor")
         sender = gl.message.sender_address
         if sender == e.depositor:
             e.cancel_yes_depositor = True
@@ -291,10 +314,12 @@ class AdjudicatedEscrow(gl.Contract):
             raise gl.vm.UserError("only agreement parties can consent")
 
         if e.cancel_yes_depositor and e.cancel_yes_contractor:
-            half = e.fee // u256(2)
-            self._pay(e.depositor, e.deposit + half)
-            self._pay(e.contractor, e.bond + (e.fee - half))
-            self.total_escrowed = self.total_escrowed - (e.deposit + e.bond)
+            # An accepted agreement contains exactly one base fee contributed
+            # by each party. Mutual cancellation returns every attachment to
+            # its contributor rather than leaving a fee residual.
+            self._pay(e.depositor, e.deposit + self.base_fee)
+            self._pay(e.contractor, e.bond + self.base_fee)
+            self.total_escrowed = self.total_escrowed - self._liability(e)
             e.state = STATE_REFUNDED
             e.ruling = Ruling(
                 outcome=STATE_REFUNDED,
@@ -468,29 +493,47 @@ class AdjudicatedEscrow(gl.Contract):
         return self.escrows[agreement_id]
 
     def _required_bond(self, deposit: u256) -> u256:
-        return deposit * BOND_BPS // u256(10000)
+        # Split quotient/remainder to preserve the standard floor rule while
+        # avoiding an intermediate `deposit * BOND_BPS` u256 overflow.
+        scale = u256(10000)
+        return (
+            (deposit // scale) * BOND_BPS
+            + (deposit % scale) * BOND_BPS // scale
+        )
+
+    def _liability(self, e: Agreement) -> u256:
+        """Return all value attached to an agreement, including both fees."""
+        return e.deposit + e.bond + e.fee
+
+    def _increase_total_escrowed(self, amount: u256) -> None:
+        """Add a verified attachment without overflowing the liability counter."""
+        if amount > MAX_U256 - self.total_escrowed:
+            raise gl.vm.UserError("aggregate escrow liability exceeds the safe amount range")
+        self.total_escrowed = self.total_escrowed + amount
 
     def _now(self) -> u256:
         return u256(int(datetime.now(timezone.utc).timestamp()))
 
     def _apply_ruling(self, agreement_id: u256, outcome: u8, reason: str) -> None:
         e = self._agreement_or_revert(agreement_id)
-        total = e.deposit + e.bond
+        stake = e.deposit + e.bond
         fees = e.fee
-        half = fees // u256(2)
+        liability = self._liability(e)
 
         if outcome == STATE_FULFILLED:
-            self._pay(e.contractor, total - fees)
+            self._pay(e.contractor, stake)
         elif outcome == STATE_FAILED:
-            self._pay(e.depositor, total - fees)
+            self._pay(e.depositor, stake)
         elif outcome == STATE_REFUNDED:
-            self._pay(e.depositor, e.deposit - half)
-            self._pay(e.contractor, e.bond - (fees - half))
+            self._pay(e.depositor, e.deposit)
+            self._pay(e.contractor, e.bond)
         else:
             raise gl.vm.UserError("unreachable outcome")
 
+        # Fees were attached in addition to stake, so they are paid once here
+        # and are never subtracted from either participant's stake payout.
         self._pay(self.fee_recipient, fees)
-        self.total_escrowed = self.total_escrowed - total
+        self.total_escrowed = self.total_escrowed - liability
         e.state = outcome
         e.ruling = Ruling(outcome=outcome, reason=reason, decided_at=self._now())
 
