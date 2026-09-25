@@ -96,11 +96,10 @@ def direct_charlie():
 
 
 @pytest.fixture
-def escrow(direct_deploy, direct_alice, direct_charlie):
+def escrow(direct_deploy, direct_vm, direct_charlie):
+    direct_vm.sender = direct_charlie
     return direct_deploy(
         CONTRACT_PATH,
-        direct_alice,
-        direct_charlie,
         BASE_FEE,
         sdk_version=SDK_VERSION,
     )

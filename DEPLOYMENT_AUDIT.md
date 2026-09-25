@@ -1,0 +1,7 @@
+# Deployment Audit Notes
+
+The current accounting correction is validated locally with `gltest tests/ -v`. The Studio UI source import preserved the multiline contract source, and its schema loader accepted the current contract header. An initial Studio UI deployment transaction (`0xcf5a3cc4fec33549e337a313e0457814eb8900438ea422e423c3b49dac18e50c`) reached `FINALIZED` consensus but its constructor execution failed: the Studio generic address fields were serialized as integers, producing `AttributeError: 'int' object has no attribute 'as_bytes'`. It is not evidence for the corrected deployment.
+
+To eliminate that UI serialization defect while retaining the deployed recipient configuration, this revision binds both `arbiter_hint` and `fee_recipient` to `gl.message.sender_address` during construction and accepts only `base_fee` as a constructor argument. The deployed recipient remains the deployer, exactly as intended for the test deployment. The Direct Mode fixtures set the deployer explicitly and assert this binding.
+
+Relevant external references include the [GenLayer deployment guide](https://docs.genlayer.com/developers/intelligent-contracts/deploying), the [GenVM runner specification](https://sdk.genlayer.com/v0.2.9/spec/02-execution-environment/04-runners.html), and the failed Studio transaction [Explorer page](https://explorer-studio.genlayer.com/tx/0xcf5a3cc4fec33549e337a313e0457814eb8900438ea422e423c3b49dac18e50c).

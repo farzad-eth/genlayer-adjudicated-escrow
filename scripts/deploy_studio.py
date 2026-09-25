@@ -13,7 +13,7 @@ from pathlib import Path
 
 from genlayer_py import create_account, create_client
 from genlayer_py.chains import studionet
-from genlayer_py.types import CalldataAddress, TransactionStatus
+from genlayer_py.types import TransactionStatus
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_PATH = ROOT / "contracts" / "AdjudicatedEscrow.py"
@@ -55,10 +55,9 @@ def main() -> None:
     if balance <= 0:
         raise SystemExit("FATAL: fund the Studionet-only deployer before deploying.")
 
-    deployer_address = CalldataAddress(account.address)
     tx_hash = client.deploy_contract(
         code=code,
-        args=[deployer_address, deployer_address, BASE_FEE],
+        args=[BASE_FEE],
     )
     print("tx_hash:", tx_hash)
 

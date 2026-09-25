@@ -33,21 +33,20 @@ def strict_direct_mocks(direct_vm):
 
 
 class TestDeploymentAndOpening:
-    def test_config_and_empty_registry(self, escrow, direct_alice, direct_charlie):
+    def test_config_and_empty_registry(self, escrow, direct_charlie):
         cfg = escrow.config()
-        assert cfg["arbiter_hint"] == direct_alice.as_hex
+        assert cfg["arbiter_hint"] == direct_charlie.as_hex
         assert cfg["fee_recipient"] == direct_charlie.as_hex
         assert cfg["base_fee"] == BASE_FEE
         assert cfg["bond_bps"] == 2500
         assert escrow.agreement_count() == 0
         assert escrow.get_total_escrowed() == 0
 
-    def test_constructor_rejects_zero_fee(self, direct_deploy, direct_alice, direct_charlie):
+    def test_constructor_rejects_zero_fee(self, direct_deploy, direct_vm, direct_charlie):
+        direct_vm.sender = direct_charlie
         with pytest.raises(Exception, match="safe non-zero"):
             direct_deploy(
                 "contracts/AdjudicatedEscrow.py",
-                direct_alice,
-                direct_charlie,
                 0,
             )
 

@@ -128,11 +128,14 @@ class AdjudicatedEscrow(gl.Contract):
     # Complete outstanding liability: participant stake *and* attached fees.
     total_escrowed: u256
 
-    def __init__(self, arbiter_hint: Address, fee_recipient: Address, base_fee: u256):
+    def __init__(self, base_fee: u256):
         if base_fee == u256(0) or base_fee > MAX_BASE_FEE:
             raise gl.vm.UserError("base fee must be within the safe non-zero range")
-        self.arbiter_hint = arbiter_hint
-        self.fee_recipient = fee_recipient
+        # Deployment binds fee collection to the deploying account. Besides
+        # making the recipient auditable, this avoids accepting untyped
+        # caller-provided addresses during constructor execution.
+        self.arbiter_hint = gl.message.sender_address
+        self.fee_recipient = gl.message.sender_address
         self.base_fee = base_fee
         self.next_id = u256(1)
         self.total_escrowed = u256(0)
